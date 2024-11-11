@@ -219,13 +219,14 @@ for j = 1:M
 end
 
 % Distribute rC_theta incrementally from i_LE to i_TE along the axial direction
-for r = 1:M  % Loop over radial points from hub to shroud
-    for x = (i_LE + 1):i_TE  % Loop over axial points from L.E. to T.E.
+for x = 1:M  % Loop over radial points from hub to shroud
+    for r = (i_LE + 1):i_TE  % Loop over axial points from L.E. to T.E.
         % Linearly interpolate in the x-direction between i_LE and i_TE
-        rC_theta(r, x) = rC_theta(r, x - 1) + delta_rC_theta_TE(r) * (x - i_LE) / (i_TE - i_LE);
+        rC_theta(r, x) = rC_theta(r, x) + delta_rC_theta_TE(x) * (r - i_LE) / (i_TE - i_LE);
     end
 end
 
+rC_theta = rC_theta.';
 % Calculate C_theta
 C_theta = rC_theta ./ R; 
 
