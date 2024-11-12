@@ -296,13 +296,14 @@ h_o_rel(:, 1) = h_o1_rel;
 P_o1_rel = zeros(num_points_r, 1);
 
 % Calculate P_o1_rel for each radial position j
-for x = 1:num_points_r
+for x = 1:N
     P_o1_rel(x) = P_inlet_static(x,1) * (T_o1_rel(x) / T_o1(x))^(gamma / (gamma - 1));
 end
 
 P_o_rel(:, 1) = P_o1_rel;
 
 S(:, 1) = 0;  
+
 C_theta_global(:, 1) = C_theta(:, 1);
 
 % Initialize static temperature and pressure at station 1
@@ -310,9 +311,8 @@ T_static_global(:, 1) = T_inlet_static(:,1);  % Set initial static temperature t
 P_static_global(:, 1) = P_inlet_static(:,1);  % Set initial static pressure to inlet static pressure
 rho_global(:, 1) = P_static_global(:, 1) ./ (R_constant .* T_static_global(:, 1));
 
-
 % Loop over each axial station (starting from station 2)
-for r = 2:N
+for r = 2:num_points_x
     % Compute V_theta and other parameters at each radial position
     for x = 1:M
         % Calculate V_theta and Beta at station i
@@ -347,28 +347,157 @@ for r = 2:N
     C_theta_global(:, r) = C_theta(:, r);  % Assuming C_theta is defined for each x position in original data
 end
 
-% ------- Step 4: Calculate Vorticity -------
+% % ------- Step 4: Calculate Vorticity -------
 
 omega = zeros(num_points_x, num_points_r);
 
 % Loop through each (i, j) node, excluding boundaries
 for r = 2:num_points_x - 1
-    for x = 2:num_points_r - 1
+    for x = 2:num_points_r
+
+        
         % Term 1: C_theta(i, j) / (R(i, j) * delta_r * m_dot * C_x(i, j))
-        term1 = (C_theta(r, x) / (R(r, x) * C_x(r, x))) * (rC_theta(r, x + 1) - rC_theta(r, x - 1));
-        
+        term1 = (C_theta(r, x) / (R(r, x) * C_x(r, x))) * (rC_theta(r + 1, x) - rC_theta(r - 1, x));
+
         % Term 2: T(i, j) / (delta_r * m_dot * C_x(i, j)) * (S(i, j+1) - S(i, j-1))
-        term2 = (T_static_global(r, x) / (C_x(r, x))) * (S(r, x + 1) - S(r, x - 1));
-        
+        term2 = (T_static_global(r, x) / (C_x(r, x))) * (S(r + 1, x) - S(r - 1, x));
+    
         % Term 3: - (1 / (delta_r * m_dot * C_x(i, j))) * (H_o(i, j+1) - H_o(i, j-1))
-        term3 = - (1 / (C_x(r, x))) * (h_o(r, x + 1) - h_o(r, x - 1));
-        
+        term3 = - (1 / (C_x(r, x))) * (h_o(r + 1, x) - h_o(r - 1, x));
+
         % Calculate omega_i,j
-        omega(r, x) = (pi / dr * m_dot) .* (term1 + term2 + term3);
+        omega(r, x) = (pi / (dr * m_dot)) .* (term1 + term2 + term3);
+
     end
 end
 
-% S(:,:) = 0;
+S(:,:) = 0;
 
 % ------- Step 5: Update Psi -------
+
+A = zeros(num_points_x, num_points_r);
+B = zeros(num_points_x, num_points_r);
+
+for x = 2:N - 1
+    for r = 2:M - 1
+        % Calculate A(r, x) using averaged values instead of non-integer indices
+        A(r, x) = 1 / ((1 / ((rho_global(r, x) + rho_global(r, x + 1)) / 2 * (R(r, x) + R(r, x + 1)) / 2)) ...
+                    + (1 / ((rho_global(r, x) + rho_global(r, x - 1)) / 2 * (R(r, x) + R(r, x - 1)) / 2)) ...
+                    + (1 / ((rho_global(r + 1, x) + rho_global(r, x)) / 2 * (R(r + 1, x) + R(r, x)) / 2)) ...
+                    + (1 / ((rho_global(r - 1, x) + rho_global(r, x)) / 2 * (R(r - 1, x) + R(r, x)) / 2)));
+
+        % Calculate B(r, x) using averaged values for neighboring psi values
+        B(r, x) = ((Psi_values(r, x + 1) / ((rho_global(r, x) + rho_global(r, x + 1)) / 2 * (R(r, x) + R(r, x + 1)) / 2)) ...
+                 + (Psi_values(r, x - 1) / ((rho_global(r, x) + rho_global(r, x - 1)) / 2 * (R(r, x) + R(r, x - 1)) / 2)) ...
+                 + (Psi_values(r + 1, x) / ((rho_global(r + 1, x) + rho_global(r, x)) / 2 * (R(r + 1, x) + R(r, x)) / 2)) ...
+                 + (Psi_values(r - 1, x) / ((rho_global(r - 1, x) + rho_global(r, x)) / 2 * (R(r - 1, x) + R(r, x)) / 2)));
+
+        % Update psi at the current node using A(r, x) and B(r, x)
+        Psi_values(r, x) = A(r, x) * (B(r, x) + dx^2 * omega(r, x));
+    end
+end
+
+% ------- Step 6: Update the velocities -------
+
+% Loop through each point in the grid
+for r = 1:num_points_r      % Loop over radial points (exclude boundary nodes)
+    for x = 1:num_points_x  % Loop over axial points (exclude boundary nodes)
+
+        if r == 1 && x == 1 % Hub-LE
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r + 1, x) - Psi_values(r, x)) / dr;
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x + 1) - Psi_values(r, x)) / dx;
+
+        elseif r == 1 && x == num_points_x % Hub-TE
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r + 1, x) - Psi_values(r, x)) / dr;
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x) - Psi_values(r, x - 1)) / dx;
+
+        elseif r == num_points_r && x == num_points_x % Shroud-TE
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x) - Psi_values(r - 1, x)) / dr;
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x) - Psi_values(r, x - 1)) / dx;
+
+        elseif r == num_points_r && x == 1 % Shroud-LE
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x) - Psi_values(r - 1, x)) / dr;
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x + 1) - Psi_values(r, x)) / dx;
+
+        elseif r == 1 % Hub (exclude leading and trailing edges)
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r + 1, x) - Psi_values(r, x)) / dr;
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x + 1) - Psi_values(r, x - 1)) / (2 * dx);
+
+        elseif x == 1 % Leading Edge (LE, exclude hub and shroud)
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r + 1, x) - Psi_values(r - 1, x)) / (2 * dr);
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x + 1) - Psi_values(r, x)) / dx;
+
+        elseif r == num_points_r % Shroud (exclude leading and trailing edges)
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x) - Psi_values(r - 1, x)) / dr;
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x + 1) - Psi_values(r, x - 1)) / (2 * dx);
+
+        elseif x == num_points_x % Trailing Edge (TE, exclude hub and shroud)
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r + 1, x) - Psi_values(r - 1, x)) / (2 * dr);
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x) - Psi_values(r, x - 1)) / dx;
+
+        else
+            % Internal points (not at boundaries)
+            % Calculate C_x
+            C_x(r, x) = m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r + 1, x) - Psi_values(r - 1, x)) / (2 * dr);
+            
+            % Calculate C_r
+            C_r(r, x) = -m_dot / (2 * pi * rho_inlet * R(r, x)) * ...
+                        (Psi_values(r, x + 1) - Psi_values(r, x - 1)) / (2 * dx);
+        end
+    end
+end
+
+% Calculate C_m as the magnitude of C_x and C_r
+C_m = zeros(num_points_r, num_points_x); % Initialize C_m
+for r = 1:num_points_r
+    for x = 1:num_points_x
+        C_m(r, x) = sqrt(C_r(r, x)^2 + C_x(r, x)^2);
+    end
+end
+
+% ------- Step 7: Update -------
+
+
+
 
